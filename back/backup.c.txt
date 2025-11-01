@@ -1,0 +1,331 @@
+// raycaster_ce.c
+// Port of your YouTube-3DSage raycaster to TI-84+ CE (CE Toolchain, graphx + keypadc)
+// Controls:
+//   Arrow Left/Right -> rotate
+//   Arrow Up/Down    -> move forward / back
+//   CLEAR            -> exit
+
+#include <tice.h>
+#include <graphx.h>
+#include <keypadc.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+// ----------------------------- MAP -----------------------------------------
+#define MAP_X 8         // map width (tiles)
+#define MAP_Y 8         // map height (tiles)
+#define MAP_S 16        // tile pixel size on mini-map
+
+// keep outer walls = 1
+const uint8_t map_data[MAP_X * MAP_Y] =
+{
+    1,1,1,1,1,1,1,1,
+    1,0,1,0,0,0,0,1,
+    1,0,1,0,0,0,0,1,
+    1,0,1,0,0,0,0,1,
+    1,0,0,0,0,0,0,1,
+    1,0,0,0,0,1,0,1,
+    1,0,0,0,0,0,0,1,
+    1,1,1,1,1,1,1,1,
+};
+
+// --------------------------- Player ----------------------------------------
+static float px, py;   // player pos in pixels (world)
+static float pa;       // player angle (degrees)
+static float pdx, pdy; // player direction unit vector
+
+// helpers
+static inline float degToRad(float a) { return a * (float)M_PI / 180.0f; }
+static inline int FixAng(int a) { if (a > 359) a -= 360; if (a < 0) a += 360; return a; }
+
+// ---------------------- Rendering parameters -------------------------------
+// layout: mini-map left (map_w x map_h) ; 3D view on the right
+#define MINI_MAP_W (MAP_X * MAP_S)
+#define MINI_MAP_H (MAP_Y * MAP_S)
+#define SCREEN_W GFX_LCD_WIDTH   // 320
+#define SCREEN_H GFX_LCD_HEIGHT  // 240
+#define VIEW_X (MINI_MAP_W)      // 128 if MAP_S=16 and MAP_X=8 -> VIEW_X=128
+#define VIEW_W (SCREEN_W - VIEW_X)
+#define VIEW_H (SCREEN_H)
+#define FOV 60                   // degrees total field of view
+#define NUM_RAYS 120             // number of rays (fit into VIEW_W)
+#define RAY_STEP ( (float)FOV / (float)NUM_RAYS )
+#define COL_W (VIEW_W / NUM_RAYS) // column width in pixels (integer division OK)
+
+// ------------------------- Draw helpers ------------------------------------
+static inline bool map_has_wall(int mx, int my)
+{
+    if (mx < 0 || my < 0 || mx >= MAP_X || my >= MAP_Y) return true;
+    return map_data[my * MAP_X + mx] != 0;
+}
+
+// -------------------------- Draw functions ---------------------------------
+static void draw_minimap(void)
+{
+    // background
+    gfx_SetColor(0); // palette index 0 (default = black)
+    gfx_FillRectangle(0, 0, MINI_MAP_W, MINI_MAP_H);
+
+    // tiles
+    for (int y = 0; y < MAP_Y; ++y)
+    {
+        for (int x = 0; x < MAP_X; ++x)
+        {
+            int px0 = x * MAP_S;
+            int py0 = y * MAP_S;
+            if (map_data[y * MAP_X + x] == 1)
+            {
+                gfx_SetColor(1); // white-ish (palette index 1)
+                gfx_FillRectangle(px0, py0, MAP_S, MAP_S);
+            }
+            else
+            {
+                // leave black or draw small grid lines
+                gfx_SetColor(0);
+                gfx_FillRectangle(px0, py0, MAP_S, MAP_S);
+            }
+        }
+    }
+
+    // player on mini-map
+    int pxi = (int)(px);
+    int pyi = (int)(py);
+    gfx_SetColor(11); // some distinct color index (greenish)
+    gfx_FillCircle(pxi, pyi, 2);
+
+    // player facing line
+    gfx_SetColor(10); // another color
+    int lx = pxi + (int)(pdx * 10.0f);
+    int ly = pyi + (int)(pdy * 10.0f);
+    gfx_Line(pxi, pyi, lx, ly);
+}
+
+// ray distance helper (projection fix)
+static float fix_fisheye(float dist, float ray_ang, float player_ang)
+{
+    int ca = FixAng((int)(player_ang - ray_ang));
+    return dist * cosf(degToRad((float)ca));
+}
+
+static void draw_rays_and_3d(void)
+{
+    // top: sky rect over 3D area, bottom: floor
+    gfx_SetColor(8); // sky
+    gfx_FillRectangle(VIEW_X, 0, VIEW_W, VIEW_H/2);
+    gfx_SetColor(3); // floor
+    gfx_FillRectangle(VIEW_X, VIEW_H/2, VIEW_W, VIEW_H/2);
+
+    float ray_angle = pa + (FOV / 2.0f); // start angle (rightmost), we'll step leftwards
+    for (int r = 0; r < NUM_RAYS; ++r)
+    {
+        // normalize
+        if (ray_angle >= 360.0f) ray_angle -= 360.0f;
+        if (ray_angle < 0.0f) ray_angle += 360.0f;
+
+        // ---------- vertical ray check ----------
+        float vx = 0, vy = 0;
+        float disV = 1e6f;
+        float ra = degToRad(ray_angle);
+        float Tan = tanf(ra);
+
+        float rx, ry, xo, yo;
+        int dof = 0;
+
+        if (cosf(ra) > 0.001f) // looking right (in world coordinates)
+        {
+            rx = ((int)px / MAP_S) * MAP_S + MAP_S;
+            ry = py + (px - rx) * Tan;
+            xo = MAP_S;
+            yo = -xo * Tan;
+        }
+        else if (cosf(ra) < -0.001f) // looking left
+        {
+            rx = ((int)px / MAP_S) * MAP_S - 0.0001f;
+            ry = py + (px - rx) * Tan;
+            xo = -MAP_S;
+            yo = -xo * Tan;
+        }
+        else
+        {
+            rx = px; ry = py; dof = 8;
+        }
+
+        while (dof < 8)
+        {
+            int mx = (int)(rx) / MAP_S;
+            int my = (int)(ry) / MAP_S;
+            if (mx >= 0 && my >= 0 && mx < MAP_X && my < MAP_Y && map_has_wall(mx, my))
+            {
+                vx = rx; vy = ry;
+                disV = fabsf((rx - px) / cosf(ra)); // approximate
+                dof = 8;
+            }
+            else
+            {
+                rx += xo; ry += yo; dof += 1;
+            }
+        }
+
+        // ---------- horizontal ray check ----------
+        float hx = 0, hy = 0;
+        float disH = 1e6f;
+        dof = 0;
+        Tan = 1.0f / Tan;
+
+        if (sinf(ra) > 0.001f) // looking up (screen coords top=0)
+        {
+            ry = ((int)py / MAP_S) * MAP_S - 0.0001f;
+            rx = px + (py - ry) * Tan;
+            yo = -MAP_S;
+            xo = -yo * Tan;
+        }
+        else if (sinf(ra) < -0.001f) // looking down
+        {
+            ry = ((int)py / MAP_S) * MAP_S + MAP_S;
+            rx = px + (py - ry) * Tan;
+            yo = MAP_S;
+            xo = -yo * Tan;
+        }
+        else
+        {
+            rx = px; ry = py; dof = 8;
+        }
+
+        while (dof < 8)
+        {
+            int mx = (int)(rx) / MAP_S;
+            int my = (int)(ry) / MAP_S;
+            if (mx >= 0 && my >= 0 && mx < MAP_X && my < MAP_Y && map_has_wall(mx, my))
+            {
+                hx = rx; hy = ry;
+                disH = fabsf((rx - px) / cosf(ra)); // approximate
+                dof = 8;
+            }
+            else
+            {
+                rx += xo; ry += yo; dof += 1;
+            }
+        }
+
+        // choose closer hit
+        float hitx, hity, final_dist;
+        bool vertical_hit = false;
+        if (disV < disH)
+        {
+            hitx = vx; hity = vy; final_dist = disV; vertical_hit = true;
+        }
+        else
+        {
+            hitx = hx; hity = hy; final_dist = disH; vertical_hit = false;
+        }
+
+        // Draw ray on mini-map (for debugging / visual)
+        gfx_SetColor(12);
+        gfx_Line((int)px, (int)py, (int)hitx, (int)hity);
+
+        // Fix fisheye
+        float pdist = fix_fisheye(final_dist, ray_angle, pa);
+        if (pdist < 1.0f) pdist = 1.0f;
+
+        // Calculate projected wall height
+        int lineH = (int)((MAP_S * (float)VIEW_H) / pdist);
+        if (lineH > VIEW_H) lineH = VIEW_H;
+        int lineOff = (VIEW_H / 2) - (lineH >> 1);
+
+        // choose color shading (vertical faces slightly darker)
+        if (vertical_hit) gfx_SetColor(6); else gfx_SetColor(9);
+
+        // draw vertical strip in 3D view (use rectangle for width >1)
+        int colx = VIEW_X + r * COL_W;
+        if (COL_W <= 1)
+        {
+            // single pixel wide vertical line
+            gfx_VertLine(colx, lineOff, lineH);
+        }
+        else
+        {
+            // filled rectangle as column
+            gfx_FillRectangle(colx, lineOff, COL_W, lineH);
+        }
+
+        // step to next ray (scan left across FOV)
+        ray_angle -= RAY_STEP;
+    } // end rays
+}
+
+// --------------------------- Main loop -------------------------------------
+int main(void)
+{
+    // initial player setup (center-ish on map)
+    px = (2.35f * MAP_S);   // tile 2.35 -> pixel pos
+    py = (6.25f * MAP_S);
+    pa = 90.0f; // facing "up" on mini map coordinate system
+    pdx = cosf(degToRad(pa));
+    pdy = -sinf(degToRad(pa));
+
+    gfx_Begin();
+    gfx_SetDrawBuffer(); // draw to back buffer
+    // optional: tweak palette entries if you want custom colors
+    // gfx_palette[1] = gfx_RGBTo1555(255,255,255); // set palette index 1 to white
+
+    // main loop
+    bool running = true;
+    while (running)
+    {
+        // input
+        kb_Scan();
+        if (kb_IsDown(kb_KeyClear)) { running = false; break; }
+
+        // rotation
+        if (kb_IsDown(kb_KeyLeft))
+        {
+            pa += 4.0f;
+            if (pa >= 360.0f) pa -= 360.0f;
+            pdx = cosf(degToRad(pa));
+            pdy = -sinf(degToRad(pa));
+        }
+        if (kb_IsDown(kb_KeyRight))
+        {
+            pa -= 4.0f;
+            if (pa < 0.0f) pa += 360.0f;
+            pdx = cosf(degToRad(pa));
+            pdy = -sinf(degToRad(pa));
+        }
+
+        // movement (forward/back)
+        float moveSpeed = 1.5f;
+        if (kb_IsDown(kb_KeyUp))
+        {
+            float nx = px + pdx * moveSpeed;
+            float ny = py + pdy * moveSpeed;
+            // collision check (simple)
+            int mx = (int)(nx) / MAP_S;
+            int my = (int)(ny) / MAP_S;
+            if (!map_has_wall(mx, my)) { px = nx; py = ny; }
+        }
+        if (kb_IsDown(kb_KeyDown))
+        {
+            float nx = px - pdx * moveSpeed;
+            float ny = py - pdy * moveSpeed;
+            int mx = (int)(nx) / MAP_S;
+            int my = (int)(ny) / MAP_S;
+            if (!map_has_wall(mx, my)) { px = nx; py = ny; }
+        }
+        // draw
+        gfx_FillScreen(0); // clear screen (palette index 0)
+        draw_minimap();
+        draw_rays_and_3d();
+
+        // small HUD instructions
+        gfx_SetTextXY(1, (VIEW_H / 8) / 8);
+        gfx_SetColor(1);
+        gfx_PrintString("Arrows = move/turn  CLEAR = exit");
+
+        // present frame
+        gfx_SwapDraw();
+    }
+
+    gfx_End();
+    return 0;
+}

@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "stdint.h": "c",
+        "asmmath.h": "c",
+        "cmath": "cpp"
+    }
+}

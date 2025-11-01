@@ -1,0 +1,13 @@
+Optimization:
+1.draw mini-map as chunks (greedy method) rather than each block
+2.pa as fixed24 (player angle)
+3.Directly access cos / sin table
+4.precompute variables
+5.toggle map
+
+
+
+Important
+1.Refer to degrees / non essential decimals as int24_t
+
+//optimize trig.h

@@ -1,0 +1,70 @@
+#include <graphx.h>
+#include <ti/getcsc.h>
+#include <ti/real.h>
+#include <sys/timers.h>
+#include <time.h>
+#include <stdlib.h>
+
+/* Print a stopwatch value on the graphx screen */
+static void PrintTime(float elapsed)
+{
+    real_t elapsed_real;
+    char str[10];
+
+    elapsed_real = os_FloatToReal(elapsed <= 0.001f ? 0.0f : elapsed);
+    os_RealToStr(str, &elapsed_real, 8, 1, 2);
+
+    // Draw text at the top-left corner
+    gfx_SetTextXY(5, 5);
+    gfx_PrintString(str);
+}
+
+int main(void)
+{
+    float timer_seconds = 5.0f; // countdown duration
+    float difference;
+
+    srand(time(NULL)); // seed RNG
+
+    gfx_Begin();
+    gfx_SetDrawBuffer();
+
+    // Display initial random background and timer
+    uint16_t color = gfx_RGBTo1555(rand() % 256, rand() % 256, rand() % 256);
+    gfx_palette[1] = color;
+    gfx_SetColor(1);
+    gfx_FillRectangle(0, 0, 320, 240);
+    PrintTime(timer_seconds);
+    gfx_SwapDraw();
+
+    // Wait for key press to start
+    while (!os_GetCSC());
+
+    // Record start time
+    clock_t start = clock();
+
+    // Loop until timer ends
+    do {
+        clock_t now = clock();
+        float elapsed = (float)(now - start) / CLOCKS_PER_SEC;
+        difference = timer_seconds - elapsed;
+
+        // Pick a new random color each frame
+        uint16_t color = gfx_RGBTo1555(rand() % 256, rand() % 256, rand() % 256);
+        gfx_palette[1] = color;
+        gfx_SetColor(1);
+
+        // Fill screen
+        gfx_FillRectangle(0, 0, 320, 240);
+
+        // Draw updated timer
+        PrintTime(difference);
+        gfx_SwapDraw();
+    } while (difference > 0);
+
+    // Wait for key before exiting
+    while (!os_GetCSC());
+
+    gfx_End();
+    return 0;
+}
