@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include "trig.h"
 #include <debug.h>
+#include <math.h>
+
 //Settings
 
 
@@ -45,6 +47,8 @@ const int8_t map_data[MAP_X * MAP_Y] =
 //* Value calculated via fov/num rays
 #define RAY_ANGLE int8_t(4) 
 #define FOVHALF int8_t(32)
+#define WALLHEIGHT int8_t(8)
+
 //? Pre-calculated / Math related
 
 //*For the ray horizontal
@@ -86,9 +90,29 @@ static inline bool player_hit_wall(int16_t playerNewX, int16_t playerNewY) {
     return map_data[mapPosY * MAP_X + mapPosX] != 0;
 }
 
-void castRay(int16_t angle) {
+
+inline int24_t distance_sq(int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+    int24_t dx = x2 - x1;
+    int24_t dy = y2 - y1;
+    return dx * dx + dy * dy;
+}
+
+//! optimize later
+inline void projectWall(int24_t distanceSquare,int8_t rayNum) {
+    int16_t lineHeight = (WALLHEIGHT * 256) / static_cast<int24_t>(sqrtf(distanceSquare));
+    int16_t drawStart = 120 - (lineHeight >> 1);
+    gfx_Rectangle(rayNum*RES,drawStart,RES,lineHeight);
+    // dbg_printf("Line %d height: %u\n", rayNum, static_cast<int24_t>(sqrtf(distanceSquare)));
+    // dbg_printf("Line %d height: %d\n", rayNum, ( static_cast<int24_t>(sqrtf(distanceSquare))));
+    // dbg_printf("Draw Start: %d\n", drawStart);
+    
+}
+
+inline void castRay(int16_t angle,int8_t rayNum) {
     bool isFacingUp = angle > 0 && angle < 180;
     bool isFacingRight = angle < 90 || angle > 270;
+    
+    //* Horizontal
     bool foundHorizontalWall = false;
     int16_t horizontalWallHitX = 0;
     int16_t horizontalWallHitY = 0;
@@ -101,7 +125,6 @@ void castRay(int16_t angle) {
     // } else {
     //     firstIntersectionY = (playerY & RH_MAP_MASK) + MAP_S;
     // }
-    // firstIntersectionX = playerX + ((firstIntersectionY - playerY) * cot_table[angle]) >> 8;
     
     if(isFacingUp) {
         firstIntersectionY = (int)((((double)playerY / MAP_S) * MAP_S) - 0.01);
@@ -116,10 +139,11 @@ void castRay(int16_t angle) {
     int16_t xa = 0;
     int16_t ya = (isFacingUp) ? -MAP_S : MAP_S;
     
-    // xa = (ya * cot_table[angle]) >> 8;
     xa = fast_cot_mul(ya,angle);
-    
+    //while inside map
     while (nextHorizontalX <= MINI_MAP_W && nextHorizontalX >= 0 && nextHorizontalY <= MINI_MAP_H && nextHorizontalY >= 0) {
+        // gfx_SetColor(70);   
+        // gfx_Line(playerX,playerY,nextHorizontalX,nextHorizontalY);
         if(player_hit_wall(nextHorizontalX,nextHorizontalY)) {
             foundHorizontalWall = true;
             horizontalWallHitX = nextHorizontalX;
@@ -132,20 +156,93 @@ void castRay(int16_t angle) {
     }
     
     //* Testing Draw line
-    gfx_SetColor(26);
+    // gfx_SetColor(26);
     // gfx_Line(playerX,playerY,horizontalWallHitX,horizontalWallHitY);
-    gfx_Circle(horizontalWallHitX,horizontalWallHitY,4);
-    gfx_SetColor(30);
-    gfx_Line(playerX,playerY,(playerX + fast_cos_mul(50, angle)), (playerY + fast_sin_mul(50, angle)));
-    // dbg_printf("%d\n", firstIntersectionX);
-    // dbg_printf("%d\n", firstIntersectionY);
-    // dbg_printf("%d\n", nextHorizontalX);
-    // dbg_printf("%d\n", nextHorizontalY);
-    // dbg_printf("%d\n", xa);
-    // dbg_printf("%d\n", ya);
-    dbg_printf("%d°\n", angle);
-    dbg_printf("X: %d\n", horizontalWallHitX);
-    dbg_printf("Y: %d\n", horizontalWallHitY);
+    // gfx_Circle(horizontalWallHitX,horizontalWallHitY,4);
+    // gfx_SetColor(30);
+    // gfx_Line(playerX,playerY,(playerX + fast_cos_mul(50, angle)), (playerY + fast_sin_mul(50, angle)));
+    
+    
+    //* Vertical
+    angle += 180;
+    if(angle < 0) {angle += 360;}
+    else if(angle > 360) {angle -= 360;}
+    isFacingUp = angle > 0 && angle < 180;
+    isFacingRight = angle < 90 || angle > 270;
+    
+    bool foundVerticalWall = false;
+    int16_t verticalHitX = 0;
+    int16_t verticalHitY = 0;
+    if(isFacingRight) {
+        firstIntersectionX = ((playerX / MAP_S) * MAP_S) + MAP_S;
+    } else {
+        firstIntersectionX = (int)((((double)playerX / MAP_S) * MAP_S) - 0.01);
+    }
+    firstIntersectionY = playerY + fast_tan_mul(firstIntersectionX - playerX, angle);
+    
+    int16_t nextVerticalX = firstIntersectionX;
+    int16_t nextVerticalY = firstIntersectionY;
+    if(isFacingRight) {
+        xa = MAP_S;
+    } else {
+        xa = -MAP_S;
+    }
+    ya = fast_tan_mul(xa,angle);
+    while (nextVerticalX <= MINI_MAP_W && nextVerticalX >= 0 && nextVerticalY <= MINI_MAP_H && nextVerticalY >= 0) {
+        
+        // gfx_SetColor(70);   
+        // gfx_Line(playerX,playerY,nextVerticalX,nextVerticalY);
+        if(player_hit_wall(nextVerticalX,nextVerticalY)) {
+            foundVerticalWall = true;
+            verticalHitX = nextVerticalX;
+            verticalHitY = nextVerticalY;
+            break;
+        } else {
+            nextVerticalX += xa;
+            nextVerticalY += ya;
+        }
+    }
+    
+    // gfx_SetColor(26);
+    // gfx_Line(playerX,playerY,horizontalWallHitX,horizontalWallHitY);
+    // gfx_Circle(verticalHitX,verticalHitY,4);
+    // gfx_SetColor(30);
+    // gfx_Line(playerX,playerY,(playerX + fast_cos_mul(50, angle)), (playerY + fast_sin_mul(50, angle)));
+    
+    
+    //* Calculate Distance
+    
+    int24_t horizontalDistance = INT16_MAX;
+    int24_t verticalDistance = INT16_MAX;
+    
+    if(foundHorizontalWall) {
+        horizontalDistance = distance_sq(playerX,playerY,horizontalWallHitX,horizontalWallHitY);
+    }
+    if(foundVerticalWall) {
+        verticalDistance = distance_sq(playerX,playerY,verticalHitX,verticalHitY);
+    }
+    // dbg_printf("Line %d height H: %d\n", rayNum, horizontalDistance);
+    // dbg_printf("Line %d height V: %d\n", rayNum, verticalDistance);
+    int16_t wallHitX = 0;
+    int16_t wallHitY = 0;
+    if(horizontalDistance < verticalDistance) {
+        wallHitX = horizontalWallHitX;
+        wallHitY = horizontalWallHitY;
+        // gfx_SetColor(26);
+        projectWall(horizontalDistance,rayNum);
+        // dbg_printf("Line %d height OUT:     %d\n", rayNum, horizontalDistance);
+    } else {
+        wallHitX = verticalHitX;
+        wallHitY = verticalHitY;
+        // gfx_SetColor(30);
+        projectWall(verticalDistance,rayNum);
+        // dbg_printf("Line %d height OUT:     %d\n", rayNum, verticalDistance);
+    }
+    //* sqrt(_distance) = distance from player
+    
+    
+    gfx_Line(playerX,playerY,wallHitX,wallHitY);
+    
     
 }
 
@@ -171,14 +268,14 @@ void drawMiniMap() {
 }    
 
 void castAllRays() {
-    int16_t rayAngle = playerAngle - FOVHALF;
+    int16_t rayAngle = playerAngle - FOVHALF + 180;
     
     //! change 2 back to NUM_RAYS
-    for(int8_t x = 0; x < 8; x++) {
+    for(int8_t x = 0; x < 16; x++) {
         if(rayAngle < 0) {rayAngle += 360;}
         else if(rayAngle > 360) {rayAngle -= 360;}
         //Cast each ray here
-        castRay(rayAngle);
+        castRay(rayAngle,x);
         // dbg_printf("%d\n", rayAngle);
         rayAngle += RAY_ANGLE;
     }
@@ -253,7 +350,7 @@ int main(void) {
         castAllRays();
        
         // castRay(45);
-        break;
+        // break;
         gfx_SwapDraw();
         // sleep(1);
     }
