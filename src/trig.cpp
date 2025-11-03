@@ -29,7 +29,7 @@ int24_t fast_sin_mul(int16_t value, uint16_t angle) {
 }
 
 // Multiply integer by cosine, rounding to nearest integer
-int24_t fast_cos_mul(int16_t value, uint16_t angle) {
+int24_t fast_cos_mul(int24_t value, uint16_t angle) {
     int24_t c = fast_cos_deg(angle);
     int24_t product = value * c;
     if (product >= 0)

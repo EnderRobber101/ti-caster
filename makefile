@@ -2,9 +2,9 @@
 # Makefile Options
 # ----------------------------
 
-NAME = MYTI
+NAME = TICaster
 ICON = icon.png
-DESCRIPTION = "CE C Toolchain Demo"
+DESCRIPTION = "3D graphics for the ti-84 plus ce"
 COMPRESSED = NO
 
 CFLAGS = -Wall -Wextra -Oz

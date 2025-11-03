@@ -22,3 +22,6 @@ Red      = 224
 Green    = 7
 Blue     = 26
 Sky Blue = 30
+
+make clean && make debug
+make clean && make

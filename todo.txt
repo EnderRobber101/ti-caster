@@ -1,8 +1,8 @@
 Optimization:
-1.draw mini-map as chunks (greedy method) rather than each block
-2.pa as fixed24 (player angle)
-3.Directly access cos / sin table
-4.precompute variables
+1.draw mini-map as chunks (greedy method) rather than each block (not necessary)
+2.player angle as int
+3.Directly access cos / sin table (precompute)
+4.precompute variables 
 5.toggle map
 
 
